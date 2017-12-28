@@ -20,7 +20,7 @@ Uses Valve's [Source RCON protocol](https://developer.valvesoftware.com/wiki/Sou
 Prints `test`.
 
 ```c++
-srcon client = srcon("127.0.0.1", "27015", "password");
+srcon client = srcon("127.0.0.1", 27015, "password");
 std::string response = client.send("echo test");
 std::cout << response << std::endl;
 ```
