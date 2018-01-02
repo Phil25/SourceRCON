@@ -12,43 +12,50 @@
 #ifdef DEBUG
 #define LOG(str) std::clog << str << std::endl;
 #else
-#define LOG(str) {}
+#define LOG(str)
 #endif
 
-srcon::srcon(std::string address, int port, std::string pass)
-: srcon(address, port, pass, SRCON_DEFAULT_TIMEOUT){}
+srcon::srcon(const std::string address, const int port, const std::string pass, const int timeout)
+: srcon(srcon_addr{address, port, pass}, timeout){}
 
-srcon::srcon(std::string address, int port, std::string pass, int timeout)
-: address(address), pass(pass), port(port), id(0), connected(false){
-	sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	if(sockfd < 0){
-		LOG("Error opening socket (" << sockfd << ").");
+srcon::srcon(const srcon_addr addr, const int timeout):
+	addr(addr),
+	sockfd(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)),
+	id(0),
+	connected(false)
+{
+	if(sockfd == -1){
+		LOG("Error opening socket.");
 		return;
 	}
 
-	LOG("Socket (" << sockfd << ") opened.");
-
-	LOG("Connecting...");
+	LOG("Socket (" << sockfd << ") opened, connecting...");
 	if(!connect(timeout)){
 		LOG("Connection not established.");
+		close(sockfd);
 		return;
 	}
 
 	LOG("Connection established!");
 	connected = true;
 
-	send(pass, SERVERDATA_AUTH);
-	unsigned char buffer[14];
-	::recv(sockfd, buffer, 14, SERVERDATA_RESPONSE_VALUE);
-	::recv(sockfd, buffer, 14, SERVERDATA_RESPONSE_VALUE);
+	send(addr.pass, SERVERDATA_AUTH);
+	unsigned char buffer[SRCON_HEADER_SIZE];
+	::recv(sockfd, buffer, SRCON_HEADER_SIZE, SERVERDATA_RESPONSE_VALUE);
+	::recv(sockfd, buffer, SRCON_HEADER_SIZE, SERVERDATA_RESPONSE_VALUE);
 }
 
-bool srcon::connect(int timeout){
+srcon::~srcon(){
+	if(get_connected())
+		close(sockfd);
+}
+
+bool srcon::connect(const int timeout) const{
 	struct sockaddr_in server;
 	bzero((char*)&server, sizeof(server));
 	server.sin_family = AF_INET;
-	server.sin_addr.s_addr = inet_addr(address.c_str());
-	server.sin_port = htons(port);
+	server.sin_addr.s_addr = inet_addr(addr.addr.c_str());
+	server.sin_port = htons(addr.port);
 
 	fcntl(sockfd, F_SETFL, O_NONBLOCK);
 
@@ -63,58 +70,57 @@ bool srcon::connect(int timeout){
 	if((status = ::connect(sockfd, (struct sockaddr *)&server, sizeof(server))) == -1)
 		if(errno != EINPROGRESS)
 			return false;
+
 	status = select(sockfd +1, NULL, &fds, NULL, &tv);
 	fcntl(sockfd, F_SETFL, fcntl(sockfd, F_GETFL, 0) & ~O_NONBLOCK);
 	return status != 0;
 }
 
-std::string srcon::send(std::string data, int type){
+std::string srcon::send(const std::string data, const int type){
 	LOG("Sending: " << data);
-	if(!connected)
+	if(!get_connected())
 		return "Connection has not been established.";
 
-	int packet_len = data.length() +14;
+	int packet_len = data.length() +SRCON_HEADER_SIZE;
 	unsigned char packet[packet_len];
-	pack(packet, data, packet_len, type);
+	pack(packet, data, packet_len, srcon::id++, type);
 	if(::send(sockfd, packet, packet_len, 0) < 0)
 		return "Sending failed!";
 
 	return type == SERVERDATA_EXECCOMMAND ? recv() : "";
 }
 
-bool srcon::is_connected(){
-	return connected;
-}
-
-std::string srcon::recv(size_t size){
+std::string srcon::recv(const size_t size) const{
 	unsigned char* buffer = new unsigned char[size];
-	get_packet(buffer, size);
+	if(get_packet(buffer, size) <= SRCON_HEADER_SIZE)
+		return "";
 	size_t len = get_message_len(buffer);
 	std::string resp(&buffer[12], &buffer[12] +len);
 	delete [] buffer;
 	return resp;
 }
 
-void srcon::pack(unsigned char packet[], std::string data, int packet_len, int type){
-	int data_len = packet_len -14;
+void srcon::pack(unsigned char packet[], const std::string data, int packet_len, int id, int type) const{
+	int data_len = packet_len -SRCON_HEADER_SIZE;
 	bzero(packet, packet_len);
 	packet[0] = data_len +10;
-	packet[4] = srcon::id++;
+	packet[4] = id;
 	packet[8] = type;
 	for(int i = 0; i < data_len; i++)
 		packet[12 +i] = data.c_str()[i];
 }
 
-int srcon::get_packet(unsigned char* buffer, size_t size){
+int srcon::get_packet(unsigned char* buffer, size_t size) const{
 	//Avoid recv buffer size limit, keep reading until 0 terminator
 	int bytes = 0;
 	do
 		bytes += ::recv(sockfd, buffer +bytes, size, 0);
 	while(buffer[bytes -1] != 0);
+	LOG("Received " << bytes << " bytes");
 	return bytes;
 }
 
-size_t srcon::get_message_len(unsigned char* buffer){
+size_t srcon::get_message_len(unsigned char* buffer) const{
 	return	static_cast<size_t>(
 				static_cast<unsigned char>(buffer[0])		|
 				static_cast<unsigned char>(buffer[1]) << 8	|
