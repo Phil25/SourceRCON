@@ -12,7 +12,8 @@
 
 #define SRCON_DEFAULT_TIMEOUT 4
 #define SRCON_HEADER_SIZE 14
-
+#define SRCON_SLEEP_THRESHOLD 1024
+#define SRCON_SLEEP_MILLISECONDS 500
 
 struct srcon_addr{
 	std::string addr;
@@ -47,10 +48,11 @@ public:
 
 private:
 	bool connect(int timeout=SRCON_DEFAULT_TIMEOUT) const;
-	std::string recv(size_t length=4096) const;
+	std::string recv(unsigned long) const;
+	size_t read_packet_len() const;
 	void pack(unsigned char packet[], std::string data, int packet_len, int id, int type) const;
-	int get_packet(unsigned char*, size_t) const;
-	size_t get_message_len(unsigned char*) const;
+	unsigned char* read_packet(unsigned int&, bool&) const;
+	size_t byte32_to_int(unsigned char*) const;
 };
 
 

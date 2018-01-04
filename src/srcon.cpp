@@ -5,6 +5,8 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <chrono>
+#include <thread>
 
 #include "../include/srcon.h"
 
@@ -87,17 +89,56 @@ std::string srcon::send(const std::string data, const int type){
 	if(::send(sockfd, packet, packet_len, 0) < 0)
 		return "Sending failed!";
 
-	return type == SERVERDATA_EXECCOMMAND ? recv() : "";
+	if(type != SERVERDATA_EXECCOMMAND)
+		return "";
+
+	unsigned long halt_id = id;
+	send("", SERVERDATA_RESPONSE_VALUE);
+	return recv(halt_id);
 }
 
-std::string srcon::recv(const size_t size) const{
-	unsigned char* buffer = new unsigned char[size];
-	if(get_packet(buffer, size) <= SRCON_HEADER_SIZE)
-		return "";
-	size_t len = get_message_len(buffer);
-	std::string resp(&buffer[12], &buffer[12] +len);
+std::string srcon::recv(unsigned long halt_id) const{
+	unsigned int bytes = 0;
+	unsigned char* buffer = nullptr;
+	std::string response;
+	bool can_sleep = true;
+	while(1){
+		delete [] buffer;
+		buffer = read_packet(bytes, can_sleep);
+		if(byte32_to_int(buffer) == halt_id)
+			break;
+		int offset = bytes -SRCON_HEADER_SIZE +3;
+		if(offset == -1)
+			continue;
+		std::string part(&buffer[8], &buffer[8] +offset);
+		response += part;
+	}
 	delete [] buffer;
-	return resp;
+	buffer = read_packet(bytes, can_sleep);
+	delete [] buffer;
+	return response;
+}
+
+unsigned char* srcon::read_packet(unsigned int& size, bool& can_sleep) const{
+	size_t len = read_packet_len();
+	if(can_sleep && len > SRCON_SLEEP_THRESHOLD){
+		std::this_thread::sleep_for(std::chrono::milliseconds(SRCON_SLEEP_MILLISECONDS));
+		can_sleep = false;
+	}
+	unsigned char* buffer = new unsigned char[len]{0};
+	unsigned int bytes = 0;
+	do bytes += ::recv(sockfd, buffer, len -bytes, 0);
+	while(bytes < len);
+	size = len;
+	return buffer;
+}
+
+size_t srcon::read_packet_len() const{
+	unsigned char* buffer = new unsigned char[4]{0};
+	::recv(sockfd, buffer, 4, 0);
+	const size_t len = byte32_to_int(buffer);
+	delete [] buffer;
+	return len;
 }
 
 void srcon::pack(unsigned char packet[], const std::string data, int packet_len, int id, int type) const{
@@ -110,21 +151,10 @@ void srcon::pack(unsigned char packet[], const std::string data, int packet_len,
 		packet[12 +i] = data.c_str()[i];
 }
 
-int srcon::get_packet(unsigned char* buffer, size_t size) const{
-	//Avoid recv buffer size limit, keep reading until 0 terminator
-	int bytes = 0;
-	do
-		bytes += ::recv(sockfd, buffer +bytes, size, 0);
-	while(buffer[bytes -1] != 0);
-	LOG("Received " << bytes << " bytes");
-	return bytes;
-}
-
-size_t srcon::get_message_len(unsigned char* buffer) const{
+size_t srcon::byte32_to_int(unsigned char* buffer) const{
 	return	static_cast<size_t>(
 				static_cast<unsigned char>(buffer[0])		|
 				static_cast<unsigned char>(buffer[1]) << 8	|
 				static_cast<unsigned char>(buffer[2]) << 16	|
-				static_cast<unsigned char>(buffer[3]) << 24
-			) -11;
+				static_cast<unsigned char>(buffer[3]) << 24 );
 }
